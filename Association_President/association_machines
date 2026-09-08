@@ -1,0 +1,805 @@
+<?php
+session_start();
+require_once '../includes/db_connection.php';
+include('dashboard_president.php');
+
+if (!isset($_SESSION['association_id'])) {
+    header("Location: ../login.php");
+    exit;
+}
+$association_id = $_SESSION['association_id'];
+
+$message = "";
+$error   = "";
+
+/* ===============================
+   UPDATE PRICING
+================================ */
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST['update_pricing'])) {
+    $machine_id        = $_POST['machine_id'];
+    $price_per_hectare = $_POST['price_per_hectare'];
+    if ($price_per_hectare < 0) {
+        $error = "Price cannot be negative.";
+    } else {
+        $stmt = $conn->prepare("UPDATE machines SET price_per_hectare = ? WHERE id = ? AND association_id = ?");
+        $stmt->bind_param("dii", $price_per_hectare, $machine_id, $association_id);
+        if ($stmt->execute()) $message = "Pricing updated successfully!";
+        else $error = "Failed to update pricing.";
+        $stmt->close();
+    }
+}
+
+/* ===============================
+   ASSIGN OPERATOR
+================================ */
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST['assign_operator'])) {
+    $machine_id  = $_POST['machine_id'];
+    $operator_id = $_POST['operator_id'];
+    $check = $conn->prepare("SELECT id FROM machine_operators WHERE machine_id = ? AND operator_id = ? AND status = 'Active'");
+    $check->bind_param("ii", $machine_id, $operator_id);
+    $check->execute();
+    $res = $check->get_result();
+    if ($res->num_rows > 0) {
+        $error = "Operator already assigned to this machine.";
+    } else {
+        $stmt = $conn->prepare("INSERT INTO machine_operators (machine_id, operator_id, status) VALUES (?, ?, 'Active')");
+        $stmt->bind_param("ii", $machine_id, $operator_id);
+        $stmt->execute();
+        $message = "Operator assigned successfully!";
+        $stmt->close();
+    }
+    $check->close();
+}
+
+/* ===============================
+   UNASSIGN OPERATOR
+================================ */
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST['unassign_operator'])) {
+    $machine_id  = (int)$_POST['machine_id'];
+    $operator_id = (int)$_POST['operator_id'];
+    $verify = $conn->prepare("
+        SELECT mo.id FROM machine_operators mo
+        INNER JOIN machines m ON mo.machine_id = m.id
+        WHERE mo.machine_id = ? AND mo.operator_id = ? AND m.association_id = ? AND mo.status = 'Active'
+    ");
+    $verify->bind_param("iii", $machine_id, $operator_id, $association_id);
+    $verify->execute();
+    if ($verify->get_result()->num_rows > 0) {
+        $stmt = $conn->prepare("UPDATE machine_operators SET status = 'Inactive' WHERE machine_id = ? AND operator_id = ?");
+        $stmt->bind_param("ii", $machine_id, $operator_id);
+        if ($stmt->execute()) $message = "Operator unassigned successfully!";
+        else $error = "Failed to unassign operator.";
+        $stmt->close();
+    } else {
+        $error = "Assignment not found or unauthorized.";
+    }
+    $verify->close();
+}
+
+/* ===============================
+   EDIT MACHINE — status only
+================================ */
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST['edit_machine'])) {
+    $machine_id = (int)$_POST['machine_id'];
+    $status     = $_POST['status'];
+
+    $allowed = ['Active', 'Inactive', 'Under Maintenance'];
+    if (!in_array($status, $allowed)) {
+        $error = "Invalid status value.";
+    } else {
+        $stmt = $conn->prepare("UPDATE machines SET status = ? WHERE id = ? AND association_id = ?");
+        $stmt->bind_param("sii", $status, $machine_id, $association_id);
+        if ($stmt->execute()) $message = "Machine status updated successfully!";
+        else $error = "Failed to update machine.";
+        $stmt->close();
+    }
+}
+
+/* ===============================
+   FETCH MACHINES
+================================ */
+$search_field  = $_GET['search_field']   ?? 'All';
+$search_term   = $_GET['search_term']    ?? '';
+$status_filter = $_GET['statusDropdown'] ?? '';
+$date_from     = $_GET['date_from']      ?? '';
+$date_to       = $_GET['date_to']        ?? '';
+$field_changed = $_GET['field_changed']  ?? '0';
+
+$where_parts = ["m.association_id = ?"];
+
+if ($field_changed !== '1' && !empty($search_term)) {
+    if ($search_field === 'machine_name') {
+        $where_parts[] = "m.machine_name LIKE '%" . $conn->real_escape_string($search_term) . "%'";
+    } elseif ($search_field === 'type') {
+        $where_parts[] = "m.type = '" . $conn->real_escape_string($search_term) . "'";
+    }
+}
+if ($search_field === 'Status' && $field_changed !== '1') {
+    if (!empty($status_filter))
+        $where_parts[] = "m.status = '" . $conn->real_escape_string($status_filter) . "'";
+    if (!empty($date_from))
+        $where_parts[] = "DATE(m.created_at) >= '" . $conn->real_escape_string($date_from) . "'";
+    if (!empty($date_to))
+        $where_parts[] = "DATE(m.created_at) <= '" . $conn->real_escape_string($date_to) . "'";
+}
+$where_sql = "WHERE " . implode(" AND ", $where_parts);
+
+$machines_sql = "
+    SELECT m.*,
+        DATE_FORMAT(m.created_at, '%m/%d/%Y') AS assigned_at_fmt,
+        GROUP_CONCAT(CONCAT(o.name) SEPARATOR ', ') AS assigned_operators
+    FROM machines m
+    LEFT JOIN machine_operators mo ON m.id = mo.machine_id AND mo.status = 'Active'
+    LEFT JOIN operators o ON mo.operator_id = o.id
+    $where_sql
+    GROUP BY m.id
+    ORDER BY m.created_at DESC
+";
+$stmt = $conn->prepare($machines_sql);
+$stmt->bind_param("i", $association_id);
+$stmt->execute();
+$result   = $stmt->get_result();
+$machines = [];
+while ($row = $result->fetch_assoc()) $machines[] = $row;
+$stmt->close();
+
+/* Operators for assign dropdown */
+$op_stmt = $conn->prepare("SELECT * FROM operators WHERE association_id = ? AND status = 'Active' ORDER BY name");
+$op_stmt->bind_param("i", $association_id);
+$op_stmt->execute();
+$operators_result = $op_stmt->get_result();
+$operators = [];
+while ($op = $operators_result->fetch_assoc()) $operators[] = $op;
+$op_stmt->close();
+
+/* Assigned operators per machine */
+$assigned_sql = "
+    SELECT mo.machine_id, mo.operator_id, o.name AS operator_name, o.phone
+    FROM machine_operators mo
+    INNER JOIN operators o ON mo.operator_id = o.id
+    INNER JOIN machines m  ON mo.machine_id  = m.id
+    WHERE m.association_id = ? AND mo.status = 'Active'
+    ORDER BY o.name
+";
+$as_stmt = $conn->prepare($assigned_sql);
+$as_stmt->bind_param("i", $association_id);
+$as_stmt->execute();
+$as_result = $as_stmt->get_result();
+$assigned_by_machine = [];
+while ($row = $as_result->fetch_assoc())
+    $assigned_by_machine[$row['machine_id']][] = $row;
+$as_stmt->close();
+?>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Association Machines</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.css">
+<style>
+.search-form {
+    margin-bottom: 20px; display: flex;
+    flex-wrap: wrap; align-items: center; gap: 10px;
+}
+.search-form select,
+.search-form input[type="text"],
+.search-form button {
+    padding: 8px 12px; font-size: 13px;
+    border: 1px solid #2d7a2d; border-radius: 6px;
+}
+.search-form button {
+    background-color: #2d7a2d; color: white; border: none; cursor: pointer;
+}
+.search-form button:hover { background-color: #256725; }
+.flatpickr-input {
+    padding: 8px 12px !important; font-size: 13px !important;
+    border: 1px solid #2d7a2d !important; border-radius: 6px !important;
+    background: white !important; color: #333 !important;
+    width: 130px !important; box-sizing: border-box !important; cursor: pointer !important;
+}
+.flatpickr-input:focus { outline: none !important; border-color: #1a5c1a !important; }
+label.filter-lbl {
+    color: #fff; font-weight: bold; font-size: 14px;
+    margin-right: 2px; text-shadow: 1px 1px 3px rgba(14,4,4,0.7);
+}
+.main-content { padding: 20px; }
+.table-container {
+    border: 1px solid #ddd; border-radius: 8px;
+    background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,.1); overflow-x: auto;
+}
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; }
+th { background: #2d7a2d; color: white; }
+tbody tr { cursor: pointer; transition: background 0.15s; }
+tbody tr:hover { background: #f1f1f1; }
+tbody tr.selected { background: #c3e6cb !important; border-left: 4px solid #2d7a2d; }
+img.machine-img { width: 50px; height: 50px; object-fit: cover; border-radius: 6px; }
+.operator-badge {
+    background: #e7f4e7; color: #2d572c;
+    padding: 4px 6px; border-radius: 4px;
+    display: inline-block; font-size: 13px;
+}
+.price-display { font-weight: bold; color: #2d7a2d; }
+.action-buttons {
+    margin-top: 20px; display: flex;
+    justify-content: center; gap: 15px;
+}
+.action-buttons button {
+    padding: 10px 20px; border-radius: 6px; border: none;
+    background-color: #2d7a2d; color: white;
+    cursor: pointer; font-size: 14px; transition: 0.2s;
+}
+.action-buttons button:hover { background-color: #256725; transform: scale(1.03); }
+.action-buttons button:disabled { background-color: #2d7a2d; cursor: not-allowed; transform: none; }
+
+/* MODAL */
+.modal {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.5); z-index: 1000;
+    justify-content: center; align-items: center;
+    backdrop-filter: blur(3px);
+}
+.modal.active { display: flex; }
+.modal-content {
+    background: white; width: 540px; max-width: 95%;
+    max-height: 90vh; overflow-y: auto;
+    border-radius: 14px; box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+}
+.modal-content::-webkit-scrollbar { width: 6px; }
+.modal-content::-webkit-scrollbar-thumb { background: #2d7a2d; border-radius: 4px; }
+.modal-header {
+    background: linear-gradient(135deg, #2d7a2d, #1a5c1a);
+    padding: 20px 24px; border-radius: 14px 14px 0 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+}
+.modal-header h3 { color: white; margin: 0; font-size: 20px; font-weight: 700; }
+.modal-header p  { color: rgba(255,255,255,.8); font-size: 13px; margin: 4px 0 0; }
+.modal-close {
+    background: rgba(255,255,255,0.2); border: none;
+    color: white; font-size: 18px; width: 32px; height: 32px;
+    border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.modal-close:hover { background: rgba(255,255,255,0.35); }
+.modal-body { padding: 22px 24px; }
+.m-sec {
+    font-size: 12px; font-weight: 700; color: #6b7280;
+    text-transform: uppercase; letter-spacing: .5px;
+    margin-bottom: 12px; margin-top: 4px;
+    display: flex; align-items: center; gap: 8px;
+}
+.m-sec::after { content: ''; flex: 1; height: 1px; background: #e5e7eb; }
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+.form-group { margin-bottom: 14px; }
+.form-group label {
+    display: block; margin-bottom: 5px;
+    font-weight: 600; font-size: 13px; color: #374151;
+}
+.form-group input,
+.form-group select,
+.form-group textarea {
+    width: 100%; padding: 9px 12px;
+    border: 2px solid #e5e7eb; border-radius: 7px;
+    font-size: 14px; font-family: inherit; color: #1f2937;
+    box-sizing: border-box; transition: border-color .2s;
+}
+.form-group input:focus,
+.form-group select:focus { outline: none; border-color: #2d7a2d; box-shadow: 0 0 0 3px rgba(45,122,45,.1); }
+.form-group input[readonly],
+.form-group textarea[readonly] {
+    background: #f3f4f6; color: #9ca3af; cursor: not-allowed;
+    border-color: #e5e7eb;
+}
+.form-group select.editable-select { background: white; color: #1f2937; cursor: pointer; }
+.form-group select.editable-select:focus { border-color: #2d7a2d; box-shadow: 0 0 0 3px rgba(45,122,45,.1); }
+.modal-footer {
+    padding: 14px 24px; background: #f9fafb;
+    border-top: 1px solid #e5e7eb;
+    display: flex; gap: 10px; justify-content: flex-end;
+    border-radius: 0 0 14px 14px;
+}
+.btn-cancel {
+    padding: 9px 20px; background: white; color: #6b7280;
+    border: 2px solid #e5e7eb; border-radius: 6px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.btn-cancel:hover { background: #f5f5f5; }
+.btn-save {
+    padding: 9px 22px; background: #2d7a2d; color: white;
+    border: none; border-radius: 6px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+}
+.btn-save:hover { background: #256725; }
+.alert { padding: 12px; margin-bottom: 15px; border-radius: 6px; font-size: 14px; }
+.alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.alert-error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+.current-img {
+    width: 80px; height: 80px; object-fit: cover;
+    border-radius: 8px; border: 2px solid #e5e7eb;
+}
+.assigned-list { margin-bottom: 16px; }
+.assigned-item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #f0fdf4; border: 1px solid #bbf7d0;
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 8px;
+}
+.assigned-item-info { display: flex; flex-direction: column; gap: 2px; }
+.assigned-item-name { font-weight: 700; font-size: 14px; color: #1f2937; }
+.assigned-item-phone { font-size: 12px; color: #6b7280; }
+.btn-unassign {
+    background: #fee2e2; color: #dc2626;
+    border: 1px solid #fca5a5; border-radius: 6px;
+    padding: 5px 12px; font-size: 12px; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; gap: 5px;
+    transition: 0.2s; white-space: nowrap;
+}
+.btn-unassign:hover { background: #dc2626; color: white; border-color: #dc2626; }
+.no-operators-msg {
+    text-align: center; padding: 16px; color: #9ca3af;
+    background: #f9fafb; border-radius: 8px; font-size: 13px;
+    border: 1px dashed #e5e7eb; margin-bottom: 14px;
+}
+/* readonly badge */
+.readonly-note {
+    font-size: 11px; color: #9ca3af; font-weight: 400; margin-left: 4px;
+}
+@media print {
+    .action-buttons, .search-form, .modal, .alert { display: none !important; }
+    body { background: white !important; }
+    .main-content { padding: 0 !important; }
+    .table-container { border: none !important; box-shadow: none !important; }
+}
+</style>
+</head>
+
+<body>
+<div class="main-content">
+<h2 style="text-align:center; color: #2d7a2d; text-shadow:1px 1px 3px rgba(0,0,0,0.5);">My Machines</h2>
+
+<?php if ($message): ?>
+<div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($message) ?></div>
+<?php endif; ?>
+<?php if ($error): ?>
+<div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div>
+<?php endif; ?>
+
+<!-- Filter Bar -->
+<form class="search-form" method="GET" id="searchForm">
+    <input type="hidden" name="field_changed" id="field_changed" value="0">
+    <select name="search_field" id="search_field" onchange="handleFieldChange()">
+        <option value="All"          <?= ($search_field==='All')          ?'selected':'' ?>>All</option>
+        <option value="machine_name" <?= ($search_field==='machine_name') ?'selected':'' ?>>Machine Name</option>
+        <option value="type"         <?= ($search_field==='type')         ?'selected':'' ?>>Machine Type</option>
+        <option value="Status"       <?= ($search_field==='Status')       ?'selected':'' ?>>Status</option>
+    </select>
+    <input type="text" name="search_term" id="textInput" placeholder="Enter search..."
+           value="<?= htmlspecialchars($search_term) ?>" style="display:none;">
+    <select name="search_term" id="typeDropdown" style="display:none;">
+        <option value="">All Types</option>
+        <option value="Tractor"   <?= ($search_field==='type'&&$search_term==='Tractor')   ?'selected':'' ?>>Tractor</option>
+        <option value="Harvester" <?= ($search_field==='type'&&$search_term==='Harvester') ?'selected':'' ?>>Harvester</option>
+    </select>
+    <select name="statusDropdown" id="statusDropdown" style="display:none;">
+        <option value="">All Status</option>
+        <option value="Active"            <?= $status_filter==='Active'            ?'selected':'' ?>>Active</option>
+        <option value="Inactive"          <?= $status_filter==='Inactive'          ?'selected':'' ?>>Inactive</option>
+        <option value="Under Maintenance" <?= $status_filter==='Under Maintenance' ?'selected':'' ?>>Under Maintenance</option>
+    </select>
+    <label class="filter-lbl" id="from_label" style="display:none;">From</label>
+    <input type="text" id="from_date_display" placeholder="mm/dd/yyyy" readonly style="display:none;">
+    <input type="hidden" name="date_from" id="date_from" value="<?= htmlspecialchars($date_from) ?>">
+    <label class="filter-lbl" id="to_label" style="display:none;">To</label>
+    <input type="text" id="to_date_display" placeholder="mm/dd/yyyy" readonly style="display:none;">
+    <input type="hidden" name="date_to" id="date_to" value="<?= htmlspecialchars($date_to) ?>">
+    <button type="submit" id="searchBtn" style="display:none;"><i class="fas fa-search"></i> Search</button>
+    <span style="margin-left:auto; color:#fff; font-weight:bold; font-size:14px;
+                 text-shadow:1px 1px 3px rgba(14,4,4,0.7); white-space:nowrap;">
+        Total Machines: <?= count($machines) ?>
+    </span>
+</form>
+
+<div class="table-container">
+<table>
+<thead>
+<tr>
+    <th>#</th>
+    <th>Date Added</th>
+    <th>Image</th>
+    <th>Machine Name</th>
+    <th>Type</th>
+    <th>Price/Hectare</th>
+    <th>Operators</th>
+    <th>Status</th>
+</tr>
+</thead>
+<tbody id="machineTable">
+<?php if (count($machines) > 0): $i = 1; foreach ($machines as $m): ?>
+<tr class="machine-row"
+    data-id="<?= $m['id'] ?>"
+    data-name="<?= htmlspecialchars($m['machine_name']) ?>"
+    data-type="<?= htmlspecialchars($m['type']) ?>"
+    data-description="<?= htmlspecialchars($m['description'] ?? '') ?>"
+    data-status="<?= htmlspecialchars($m['status']) ?>"
+    data-price="<?= $m['price_per_hectare'] ?? 0 ?>"
+    data-image="<?= htmlspecialchars($m['image_path'] ?? '') ?>">
+    <td><?= $i++ ?></td>
+    <td><?= htmlspecialchars($m['assigned_at_fmt'] ?? '—') ?></td>
+    <td>
+        <?php if ($m['image_path']): ?>
+            <img src="<?= htmlspecialchars($m['image_path']) ?>" class="machine-img">
+        <?php else: ?>
+            <span style="color:#9ca3af; font-size:12px;">No Image</span>
+        <?php endif; ?>
+    </td>
+    <td><?= htmlspecialchars($m['machine_name']) ?></td>
+    <td><?= htmlspecialchars($m['type']) ?></td>
+    <td class="price-display">
+        <?php if (isset($m['price_per_hectare']) && $m['price_per_hectare'] > 0): ?>
+            ₱<?= number_format($m['price_per_hectare'], 2) ?>
+        <?php else: ?><span style="color:#999;">Not Set</span><?php endif; ?>
+    </td>
+    <td>
+        <?= $m['assigned_operators']
+            ? '<span class="operator-badge">'.htmlspecialchars($m['assigned_operators']).'</span>'
+            : '<span style="color:#9ca3af;">None</span>' ?>
+    </td>
+    <td><?= htmlspecialchars($m['status']) ?></td>
+</tr>
+<?php endforeach; else: ?>
+<tr><td colspan="8" style="text-align:center; padding:20px; color:#555;">No records found</td></tr>
+<?php endif; ?>
+</tbody>
+</table>
+</div>
+
+<div class="action-buttons">
+    <button id="btnSetPrice" onclick="openPricingModal()" disabled>
+        </i> Price
+    </button>
+    <button id="btnAssign" onclick="openAssignModal()" disabled>
+         Operator
+    </button>
+    <button id="btnEdit" onclick="openEditModal()" disabled>
+         Edit
+    </button>
+    <button onclick="window.print()">
+         Print
+    </button>
+</div>
+</div>
+
+
+<!-- ══ PRICING MODAL ══ -->
+<div id="pricingModal" class="modal">
+<div class="modal-content">
+    <div class="modal-header">
+        <div>
+            <h3><i class="fas fa-tag"></i> Set Price Per Hectare</h3>
+            <p id="pricingMachineName"></p>
+        </div>
+        <button class="modal-close" onclick="closeModal('pricingModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body">
+        <form method="POST">
+            <input type="hidden" name="machine_id" id="pricing_machine_id">
+            <div class="m-sec"><i class="fas fa-peso-sign"></i> Pricing</div>
+            <div class="form-group">
+                <label>Price Per Hectare (₱)</label>
+                <input type="number" name="price_per_hectare" id="price_per_hectare"
+                       step="0.01" min="0" required placeholder="0.00">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeModal('pricingModal')">Cancel</button>
+                <button type="submit" name="update_pricing" class="btn-save">
+                    <i class="fas fa-check"></i> Update Price
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+</div>
+
+
+<!-- ══ ASSIGN / UNASSIGN OPERATOR MODAL ══ -->
+<div id="assignModal" class="modal">
+<div class="modal-content">
+    <div class="modal-header">
+        <div>
+            <h3><i class="fas fa-user-cog"></i> Manage Operators</h3>
+            <p id="assignMachineName"></p>
+        </div>
+        <button class="modal-close" onclick="closeModal('assignModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body">
+        <div class="m-sec"><i class="fas fa-users"></i> Currently Assigned</div>
+        <div id="assignedOperatorsList" class="assigned-list"></div>
+        <div class="m-sec"><i class="fas fa-user-plus"></i> Assign New Operator</div>
+        <form method="POST" id="assignForm">
+            <input type="hidden" name="machine_id" id="assign_machine_id">
+            <div class="form-group">
+                <label>Select Operator</label>
+                <select name="operator_id" id="operator_id" required>
+                    <option value="">-- Select Operator --</option>
+                    <?php foreach ($operators as $op): ?>
+                    <option value="<?= $op['id'] ?>">
+                        <?= htmlspecialchars($op['name']) ?> (<?= htmlspecialchars($op['phone']) ?>)
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeModal('assignModal')">Cancel</button>
+                <button type="submit" name="assign_operator" class="btn-save">
+                    <i class="fas fa-plus"></i> Assign
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+</div>
+
+
+<!-- ══ EDIT MACHINE MODAL (status only editable) ══ -->
+<div id="editModal" class="modal">
+<div class="modal-content">
+    <div class="modal-header">
+        <div>
+            <h3><i class="fas fa-pen"></i> Edit Machine</h3>
+            <p id="editMachineName"></p>
+        </div>
+        <button class="modal-close" onclick="closeModal('editModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body">
+        <form method="POST" id="editMachineForm">
+            <input type="hidden" name="machine_id" id="edit_machine_id">
+            <input type="hidden" name="edit_machine" value="1">
+
+            <!-- Row 1: Machine Name | Machine Type -->
+            <div class="m-sec"><i class="fas fa-info-circle"></i> Machine Information
+                <span class="readonly-note">(read-only)</span>
+            </div>
+            <div class="form-row-2">
+                <div class="form-group" style="margin-bottom:0;">
+                    <label>Machine Name</label>
+                    <input type="text" id="edit_machine_name" readonly>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label>Machine Type</label>
+                    <input type="text" id="edit_type_display" readonly>
+                </div>
+            </div>
+
+            <!-- Row 2: Machine Image | Status -->
+            <div class="m-sec" style="margin-top:16px;"><i class="fas fa-sliders-h"></i> Image & Status</div>
+            <div class="form-row-2">
+                <div class="form-group" style="margin-bottom:0;">
+                    <label>Current Image <span class="readonly-note">(read-only)</span></label>
+                    <div style="margin-top:6px;">
+                        <img id="edit_current_img" src="" class="current-img"
+                             onerror="this.style.display='none'">
+                        <span id="edit_no_image" style="color:#9ca3af; font-size:13px; display:none;">No image available</span>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label>Status <span style="color:#dc2626;">*</span></label>
+                    <select name="status" id="edit_status" class="editable-select" required>
+                        <option value="Active">Active</option>
+                        <option value="Inactive">Inactive</option>
+                        <option value="Under Maintenance">Under Maintenance</option>
+                    </select>
+                    <p style="font-size:12px; color:#6b7280; margin:6px 0 0;">
+                        <i class="fas fa-info-circle" style="color:#2d7a2d;"></i>
+                        Only the status can be changed here.
+                    </p>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeModal('editModal')">Cancel</button>
+                <button type="submit" class="btn-save"><i class="fas fa-check"></i> Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+</div>
+
+
+<!-- Hidden unassign forms -->
+<?php foreach ($assigned_by_machine as $machine_id => $ops): ?>
+    <?php foreach ($ops as $op): ?>
+    <form method="POST" id="unassign-form-<?= $machine_id ?>-<?= $op['operator_id'] ?>" style="display:none;">
+        <input type="hidden" name="unassign_operator" value="1">
+        <input type="hidden" name="machine_id"  value="<?= $machine_id ?>">
+        <input type="hidden" name="operator_id" value="<?= $op['operator_id'] ?>">
+    </form>
+    <?php endforeach; ?>
+<?php endforeach; ?>
+
+<script>
+const assignedByMachine = <?= json_encode($assigned_by_machine) ?>;
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.js"></script>
+<script>
+/* ── Flatpickr ── */
+window.fpFrom = flatpickr('#from_date_display', {
+    dateFormat: 'm/d/Y', allowInput: false,
+    onChange: function(d) {
+        document.getElementById('date_from').value = d.length
+            ? d[0].getFullYear()+'-'+String(d[0].getMonth()+1).padStart(2,'0')+'-'+String(d[0].getDate()).padStart(2,'0')
+            : '';
+    }
+});
+window.fpTo = flatpickr('#to_date_display', {
+    dateFormat: 'm/d/Y', allowInput: false,
+    onChange: function(d) {
+        document.getElementById('date_to').value = d.length
+            ? d[0].getFullYear()+'-'+String(d[0].getMonth()+1).padStart(2,'0')+'-'+String(d[0].getDate()).padStart(2,'0')
+            : '';
+    }
+});
+<?php if ($date_from): ?>fpFrom.setDate('<?= $date_from ?>', true, 'Y-m-d');<?php endif; ?>
+<?php if ($date_to):   ?>fpTo.setDate('<?= $date_to ?>',   true, 'Y-m-d');<?php endif; ?>
+
+/* ── Filter toggle ── */
+function handleFieldChange() {
+    document.getElementById('textInput').value      = '';
+    document.getElementById('typeDropdown').value   = '';
+    document.getElementById('statusDropdown').value = '';
+    document.getElementById('date_from').value      = '';
+    document.getElementById('date_to').value        = '';
+    if (window.fpFrom) fpFrom.clear();
+    if (window.fpTo)   fpTo.clear();
+    document.getElementById('field_changed').value  = '1';
+    document.getElementById('searchForm').submit();
+}
+function toggleInputs() {
+    const field    = document.getElementById('search_field').value;
+    const isStatus = field === 'Status';
+    const isText   = field === 'machine_name';
+    const isType   = field === 'type';
+    document.getElementById('textInput').style.display         = isText   ? 'inline-block' : 'none';
+    document.getElementById('typeDropdown').style.display      = isType   ? 'inline-block' : 'none';
+    document.getElementById('statusDropdown').style.display    = isStatus ? 'inline-block' : 'none';
+    document.getElementById('from_date_display').style.display = isStatus ? 'inline-block' : 'none';
+    document.getElementById('to_date_display').style.display   = isStatus ? 'inline-block' : 'none';
+    document.getElementById('from_label').style.display        = isStatus ? 'inline-block' : 'none';
+    document.getElementById('to_label').style.display          = isStatus ? 'inline-block' : 'none';
+    document.getElementById('searchBtn').style.display         = (field !== 'All') ? 'inline-block' : 'none';
+}
+window.addEventListener('DOMContentLoaded', toggleInputs);
+
+let selectedMachine = null;
+
+/* ── Row selection & double-click ── */
+document.querySelectorAll('.machine-row').forEach(function(row) {
+    row.addEventListener('click', function() {
+        document.querySelectorAll('.machine-row').forEach(r => r.classList.remove('selected'));
+        this.classList.add('selected');
+        selectedMachine = {
+            id:          this.dataset.id,
+            name:        this.dataset.name,
+            type:        this.dataset.type,
+            description: this.dataset.description,
+            status:      this.dataset.status,
+            price:       this.dataset.price,
+            image:       this.dataset.image
+        };
+        document.getElementById('btnSetPrice').disabled = false;
+        document.getElementById('btnAssign').disabled   = false;
+        document.getElementById('btnEdit').disabled     = false;
+    });
+
+    /* Double-click → machine profile page */
+    row.addEventListener('dblclick', function() {
+        const id = this.dataset.id;
+        if (id) window.location.href = 'association_machine_profile.php?id=' + id;
+    });
+});
+
+/* ── Modal helpers ── */
+function openModal(id)  { document.getElementById(id).classList.add('active'); document.body.style.overflow = 'hidden'; }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); document.body.style.overflow = ''; }
+
+document.querySelectorAll('.modal').forEach(function(m) {
+    m.addEventListener('click', function(e) {
+        if (e.target === this) { this.classList.remove('active'); document.body.style.overflow = ''; }
+    });
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.modal.active').forEach(m => {
+            m.classList.remove('active'); document.body.style.overflow = '';
+        });
+    }
+});
+
+/* ── Pricing Modal ── */
+function openPricingModal() {
+    if (!selectedMachine) return;
+    document.getElementById('pricing_machine_id').value      = selectedMachine.id;
+    document.getElementById('pricingMachineName').textContent = selectedMachine.name;
+    document.getElementById('price_per_hectare').value       = selectedMachine.price;
+    openModal('pricingModal');
+}
+
+/* ── Assign Modal ── */
+function openAssignModal() {
+    if (!selectedMachine) return;
+    document.getElementById('assign_machine_id').value       = selectedMachine.id;
+    document.getElementById('assignMachineName').textContent = selectedMachine.name;
+    document.getElementById('operator_id').value             = '';
+    const listDiv = document.getElementById('assignedOperatorsList');
+    listDiv.innerHTML = '';
+    const ops = assignedByMachine[selectedMachine.id] || [];
+    if (ops.length === 0) {
+        listDiv.innerHTML = '<div class="no-operators-msg"><i class="fas fa-user-slash"></i> No operators assigned yet.</div>';
+    } else {
+        ops.forEach(function(op) {
+            const item = document.createElement('div');
+            item.className = 'assigned-item';
+            item.innerHTML =
+                '<div class="assigned-item-info">' +
+                    '<span class="assigned-item-name"><i class="fas fa-user" style="color:#2d7a2d;margin-right:5px;"></i>' + op.operator_name + '</span>' +
+                    '<span class="assigned-item-phone"><i class="fas fa-phone" style="margin-right:4px;"></i>' + (op.phone || '—') + '</span>' +
+                '</div>' +
+                '<button type="button" class="btn-unassign" onclick="confirmUnassign(' + selectedMachine.id + ',' + op.operator_id + ',\'' + op.operator_name.replace(/'/g, "\\'") + '\')">' +
+                    '<i class="fas fa-user-minus"></i> Remove' +
+                '</button>';
+            listDiv.appendChild(item);
+        });
+    }
+    openModal('assignModal');
+}
+
+function confirmUnassign(machineId, operatorId, operatorName) {
+    if (confirm('Remove ' + operatorName + ' from this machine?\n\nThis will unassign them but their operator account will remain active.')) {
+        const form = document.getElementById('unassign-form-' + machineId + '-' + operatorId);
+        if (form) form.submit();
+    }
+}
+
+/* ── Edit Modal (status only) ── */
+function openEditModal() {
+    if (!selectedMachine) return;
+    document.getElementById('edit_machine_id').value        = selectedMachine.id;
+    document.getElementById('editMachineName').textContent  = selectedMachine.name;
+    document.getElementById('edit_machine_name').value      = selectedMachine.name;
+    document.getElementById('edit_type_display').value      = selectedMachine.type;
+    document.getElementById('edit_status').value            = selectedMachine.status;
+
+    const img    = document.getElementById('edit_current_img');
+    const noImg  = document.getElementById('edit_no_image');
+    if (selectedMachine.image) {
+        img.src           = selectedMachine.image;
+        img.style.display = 'block';
+        noImg.style.display = 'none';
+    } else {
+        img.style.display   = 'none';
+        noImg.style.display = 'inline';
+    }
+    openModal('editModal');
+}
+
+/* ── Auto-reopen modal after POST ── */
+<?php if ($message || $error): ?>
+document.addEventListener('DOMContentLoaded', function() {
+    <?php if (isset($_POST['update_pricing'])): ?>
+        document.querySelectorAll('.machine-row').forEach(r => {
+            if (r.dataset.id == '<?= (int)($_POST['machine_id'] ?? 0) ?>') { r.click(); openPricingModal(); }
+        });
+    <?php elseif (isset($_POST['assign_operator']) || isset($_POST['unassign_operator'])): ?>
+        document.querySelectorAll('.machine-row').forEach(r => {
+            if (r.dataset.id == '<?= (int)($_POST['machine_id'] ?? 0) ?>') { r.click(); openAssignModal(); }
+        });
+    <?php elseif (isset($_POST['edit_machine'])): ?>
+        document.querySelectorAll('.machine-row').forEach(r => {
+            if (r.dataset.id == '<?= (int)($_POST['machine_id'] ?? 0) ?>') { r.click(); openEditModal(); }
+        });
+    <?php endif; ?>
+});
+<?php endif; ?>
+</script>
+</body>
+</html>

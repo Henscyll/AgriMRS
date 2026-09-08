@@ -1,0 +1,39 @@
+<?php
+session_start();
+
+// Allow only operators to access
+if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'operator') {
+    header("Location: login.php");
+    exit;
+}
+?>
+
+<main class="container mt-5">
+    <h2 class="mb-4 text-center">Welcome, Operator</h2>
+
+    <div class="row">
+        <!-- Assigned Tasks -->
+        <div class="col-md-6 mb-4">
+            <div class="card border-primary h-100">
+                <div class="card-body">
+                    <h5 class="card-title">Assigned Tasks</h5>
+                    <p class="card-text">View your assigned machinery operations and task schedules.</p>
+                    <a href="assigned_tasks.php" class="btn btn-primary">View Tasks</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Machinery Logs -->
+        <div class="col-md-6 mb-4">
+            <div class="card border-primary h-100">
+                <div class="card-body">
+                    <h5 class="card-title">Machinery Logs</h5>
+                    <p class="card-text">Record or review machine usage, issues, and status reports.</p>
+                    <a href="machinery_logs.php" class="btn btn-primary">Go to Logs</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<?php include 'footer.php'; ?>

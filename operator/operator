@@ -1,0 +1,523 @@
+<?php
+// ✅ CRITICAL: No output before this point - no whitespace, no HTML, no echo
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// ✅ Handle redirect BEFORE any HTML output
+if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'farmer') {
+    header("Location: ../login.php");
+    exit;
+}
+
+// ✅ Set variables after security check
+$current_page   = basename($_SERVER['PHP_SELF']);
+$user_role      = $_SESSION['user_role'] ?? '';
+$email_address  = $_SESSION['user_email'] ?? '';
+$base_url       = "/Agricultural%20Machineries%20Reservation%20and%20Monitoring%20System/farmers/";
+
+// ✅ NOW we can output HTML
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+  <title>Farmer Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      overflow: hidden;
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background-image: linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)), url(../images/Farmers-harvesting-rice-field.jpg);
+      background-size: cover;
+      background-position: center;
+      background-attachment: fixed;
+      overflow: hidden;
+    }
+
+    /* ✅ Unified Header (Top + Bottom merged) */
+    .header {
+      background-color: #2e7d32;
+      color: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      z-index: 1000;
+    }
+
+    .header-top {
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      padding: 25px 20px;
+      position: relative;
+    }
+
+    .header-top img {
+      margin-left: 150px;
+      width: 150px;
+      height: auto;
+      object-fit: contain;
+      position: absolute;
+      top: -5px; 
+    }
+
+    .header-top h1 {
+      font-size: 24px;
+      font-weight: bold;
+      line-height: 1.2;
+      text-align: center;
+      color: #fff;
+    }
+
+    .header-bottom {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 8px 25px;
+      flex-wrap: wrap;
+      position: relative;
+    }
+
+    .header-bottom nav {
+      display: flex;
+      gap: 15px;
+      flex-wrap: wrap;
+    }
+
+    .header-bottom nav a,
+    .header-bottom nav .dropdown {
+      text-decoration: none;
+      color: #e8f5e9;
+      font-size: 15px;
+      font-weight: 500;
+      padding: 6px 10px;
+      border-radius: 6px;
+      transition: background 0.2s ease, color 0.2s ease;
+      position: relative;
+    }
+
+    .header-bottom nav a:hover {
+      background: #388e3c;
+      color: #fff;
+    }
+
+    .header-bottom nav a.active {
+      background: #a5d6a7;
+      color: #1b5e20;
+    }
+
+    /* Dropdown Styles */
+    .dropdown {
+      position: relative;
+      display: inline-block;
+      cursor: pointer;
+    }
+
+    .dropdown-toggle {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: #e8f5e9;
+      text-decoration: none;
+    }
+
+    .dropdown-toggle:after {
+      content: '▼';
+      font-size: 10px;
+    }
+
+    .dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: #1b5e20;
+      min-width: 160px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+      border-radius: 6px;
+      margin-top: 5px;
+      z-index: 1001;
+    }
+
+    .dropdown:hover .dropdown-menu {
+      display: block;
+    }
+
+    .dropdown-menu a {
+      display: block;
+      padding: 10px 15px;
+      color: #e8f5e9;
+      text-decoration: none;
+      border-radius: 0;
+      font-size: 14px;
+    }
+
+    .dropdown-menu a:first-child {
+      border-radius: 6px 6px 0 0;
+    }
+
+    .dropdown-menu a:last-child {
+      border-radius: 0 0 6px 6px;
+    }
+
+    .dropdown-menu a:hover {
+      background: #388e3c;
+      color: #fff;
+    }
+
+    .dropdown-menu a.active {
+      background: #a5d6a7;
+      color: #1b5e20;
+    }
+
+    .header-bottom .right {
+      position: absolute;
+      right: 25px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header-bottom .right .user-info {
+      color: #f9fbe7;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .header-bottom .right a {
+      text-decoration: none;
+      color: #f9fbe7;
+      font-weight: 600;
+      padding: 6px 12px;
+      border: 1px solid #f9fbe7;
+      border-radius: 6px;
+      transition: all 0.2s ease;
+      display: inline-block;
+    }
+
+    .header-bottom .right a:hover {
+      background: #fdd835;
+      color: #2e7d32;
+      border-color: #fdd835;
+    }
+
+    /* Menu Button */
+    .menu-toggle {
+      display: none;
+      background: none;
+      border: none;
+      color: white;
+      font-size: 28px;
+      cursor: pointer;
+      padding: 8px;
+      position: absolute;
+      left: 20px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1001;
+    }
+
+    .menu-toggle:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+    }
+
+    .main-content {
+      margin-top: 150px;
+      height: calc(100vh - 150px);
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    /* RESPONSIVE STYLES FOR MOBILE */
+    @media (max-width: 968px) {
+      .header-top {
+        padding: 15px 20px;
+      }
+
+      .header-top img {
+        margin-left: 0;
+        width: 100px;
+        position: relative;
+        top: 0;
+      }
+
+      .header-top h1 {
+        font-size: 16px;
+        margin-top: 8px;
+      }
+
+      /* Show hamburger menu */
+      .menu-toggle {
+        display: block;
+      }
+
+      /* Hide navigation by default on mobile */
+      .header-bottom nav {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 280px;
+        height: 100vh;
+        background: #2e7d32;
+        flex-direction: column;
+        gap: 0;
+        padding: 80px 0 20px 0;
+        box-shadow: 2px 0 10px rgba(0,0,0,0.3);
+        overflow-y: auto;
+        z-index: 999;
+      }
+
+      /* Show navigation when active */
+      .header-bottom nav.active {
+        display: flex;
+      }
+
+      .header-bottom nav a,
+      .header-bottom nav .dropdown {
+        padding: 15px 25px;
+        border-radius: 0;
+        border-left: 4px solid transparent;
+        font-size: 16px;
+        width: 100%;
+      }
+
+      .header-bottom nav a:hover {
+        background: #388e3c;
+        border-left-color: #a5d6a7;
+      }
+
+      .header-bottom nav a.active {
+        background: #1b5e20;
+        color: #a5d6a7;
+        border-left-color: #a5d6a7;
+      }
+
+      /* Mobile Dropdown */
+      .dropdown {
+        display: block;
+      }
+
+      .dropdown-menu {
+        position: static;
+        display: none;
+        background: #1b5e20;
+        box-shadow: none;
+        margin: 0;
+        width: 100%;
+      }
+
+      .dropdown.active .dropdown-menu {
+        display: block;
+      }
+
+      .dropdown-toggle {
+        justify-content: space-between;
+        width: 100%;
+      }
+
+      .dropdown-menu a {
+        padding: 12px 25px 12px 45px;
+        font-size: 15px;
+      }
+
+      /* Move user info and logout to mobile menu */
+      .header-bottom .right {
+        position: static;
+        width: 100%;
+        margin-top: auto;
+        padding: 20px 25px;
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.2);
+      }
+
+      .header-bottom .right.mobile-auth {
+        display: flex;
+      }
+
+      .header-bottom .right .user-info {
+        text-align: center;
+        padding: 8px 0;
+      }
+
+      .header-bottom .right a {
+        display: block;
+        text-align: center;
+        padding: 12px;
+        background: #1b5e20;
+        border-color: #a5d6a7;
+      }
+
+      .header-bottom .right a:hover {
+        background: #fdd835;
+        color: #2e7d32;
+      }
+
+      /* Overlay for mobile menu */
+      .menu-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 998;
+      }
+
+      .menu-overlay.active {
+        display: block;
+      }
+
+      .main-content {
+        margin-top: 120px;
+        padding: 15px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .header-top img {
+        width: 80px;
+      }
+
+      .header-top h1 {
+        font-size: 14px;
+      }
+
+      .header-bottom nav {
+        width: 250px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-top">
+    <img src="../images/123.png" alt="DA Logo">
+    <h1>Agricultural Machineries Reservation & Monitoring System</h1>
+  </div>
+
+  <div class="header-bottom">
+    <!-- Hamburger Menu Button -->
+    <button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">
+      ☰
+    </button>
+
+    <nav id="mainNav">
+      <!-- Services Dropdown -->
+      <div class="dropdown" id="servicesDropdown">
+        <div class="dropdown-toggle <?= in_array($current_page, ['tractor.php','harvester.php']) ? 'active' : '' ?>">
+          Services
+        </div>
+        <div class="dropdown-menu">
+          <a href="<?= $base_url ?>tractor.php" class="<?= $current_page === 'tractor.php' ? 'active' : '' ?>">Tractor</a>
+          <a href="<?= $base_url ?>harvester.php" class="<?= $current_page === 'harvester.php' ? 'active' : '' ?>">Harvester</a>
+        </div>
+      </div>
+
+      <a href="<?= $base_url ?>my_reservation.php" class="<?= $current_page === 'my_reservation.php' ? 'active' : '' ?>">My Reservation</a>
+      <a href="<?= $base_url ?>aboutus.php" class="<?= $current_page === 'aboutus.php' ? 'active' : '' ?>">About Us</a>
+      <a href="<?= $base_url ?>contactus.php" class="<?= $current_page === 'contactus.php' ? 'active' : '' ?>">Contact Us</a>
+      <a href="<?= $base_url ?>my_account.php" class="<?= $current_page === 'my_account.php' ? 'active' : '' ?>">My Account</a>
+      
+      <!-- Mobile Auth Section (only visible in mobile menu) -->
+      <div class="right mobile-auth">
+        <?php if (empty($user_role)): ?>
+          <a href="../login.php">Login</a>
+          <a href="../register.php">Register</a>
+        <?php else: ?>
+          <span class="user-info">Hello, <?= htmlspecialchars($email_address) ?></span>
+          <a href="../logout.php">Logout</a>
+        <?php endif; ?>
+      </div>
+    </nav>
+
+    <!-- Desktop Auth Section (hidden on mobile) -->
+    <div class="right">
+      <?php if (empty($user_role)): ?>
+        <a href="../login.php">Login</a>
+        <a href="../register.php">Register</a>
+      <?php else: ?>
+        <span class="user-info">Hello, <?= htmlspecialchars($email_address) ?></span>
+        <a href="../logout.php">Logout</a>
+      <?php endif; ?>
+    </div>
+  </div>
+</header>
+
+<!-- Overlay for mobile menu -->
+<div class="menu-overlay" id="menuOverlay"></div>
+
+<script>
+const menuToggle = document.getElementById('menuToggle');
+const mainNav = document.getElementById('mainNav');
+const menuOverlay = document.getElementById('menuOverlay');
+const servicesDropdown = document.getElementById('servicesDropdown');
+
+// Toggle main menu
+menuToggle.addEventListener('click', () => {
+  mainNav.classList.toggle('active');
+  menuOverlay.classList.toggle('active');
+  document.body.style.overflow = mainNav.classList.contains('active') ? 'hidden' : '';
+});
+
+// Close menu when clicking overlay
+menuOverlay.addEventListener('click', () => {
+  mainNav.classList.remove('active');
+  menuOverlay.classList.remove('active');
+  servicesDropdown.classList.remove('active');
+  document.body.style.overflow = '';
+});
+
+// Mobile dropdown toggle
+if (window.innerWidth <= 968) {
+  servicesDropdown.addEventListener('click', (e) => {
+    if (e.target.classList.contains('dropdown-toggle')) {
+      servicesDropdown.classList.toggle('active');
+    }
+  });
+}
+
+// Close menu when clicking a link
+document.querySelectorAll('#mainNav a').forEach(link => {
+  link.addEventListener('click', () => {
+    if (window.innerWidth <= 968) {
+      mainNav.classList.remove('active');
+      menuOverlay.classList.remove('active');
+      servicesDropdown.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+  });
+});
+
+// Handle window resize
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (window.innerWidth > 968) {
+      mainNav.classList.remove('active');
+      menuOverlay.classList.remove('active');
+      servicesDropdown.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+  }, 250);
+});
+</script>
+
+</body>
+</html>

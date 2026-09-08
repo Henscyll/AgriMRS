@@ -1,0 +1,276 @@
+<?php
+include('da_header.php');    
+require_once '../includes/config.php';
+
+// Pagination setup
+$limit = 10; 
+$page = isset($_GET['page']) && is_numeric($_GET['page']) ? intval($_GET['page']) : 1;
+$offset = ($page - 1) * $limit;
+
+// Search setup
+$searchTerm = '';
+$where = '';
+$searchField = 'name';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['search_term'])) {
+    $searchTerm = trim($_POST['search_term']);
+    $searchField = $_POST['search_field'] ?? 'name';
+
+    $safe = $conn->real_escape_string($searchTerm);
+    switch ($searchField) {
+        case 'name':
+            $where = "WHERE name LIKE '%$safe%'";
+            break;
+        case 'email':
+            $where = "WHERE email LIKE '%$safe%'";
+            break;
+        case 'municipality':
+            $where = "WHERE municipality LIKE '%$safe%'";
+            break;
+    }
+}
+
+// Count total farmers
+$count_sql = "SELECT COUNT(*) AS total FROM farmers $where";
+$count_result = $conn->query($count_sql);
+$total_records = $count_result->fetch_assoc()['total'] ?? 0;
+$total_pages = max(1, ceil($total_records / $limit));
+
+// Fetch farmers
+$sql = "SELECT id, name AS full_name, email, phone, farm_size, region, province, municipality, barangay, status 
+        FROM farmers $where 
+        LIMIT $limit OFFSET $offset";
+$result = $conn->query($sql);
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DA Farmers</title>
+
+    <style>
+
+    .da-farmers-page h2 {
+        font-size: 28px;
+        color: #0a9e0a;
+        font-weight: bold;
+        text-shadow: 1px 1px 3px rgba(14,4,4,0.4);
+        margin: 0;
+        padding-bottom: 8px;
+    }
+
+    .da-farmers-page .search-form {
+        margin-bottom: 20px;
+    }
+
+    .da-farmers-page select,
+    .da-farmers-page input[type="text"],
+    .da-farmers-page button {
+        padding: 8px 12px;
+        margin-right: 10px;
+        font-size: 14px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+    }
+
+    .da-farmers-page button {
+        background-color: #2d7a2d;
+        color: white;
+        border: none;
+        cursor: pointer;
+        transition: background-color .3s;
+    }
+
+    .da-farmers-page button:hover {
+        background-color: #256725;
+    }
+
+    .da-farmers-page .table-container {
+        overflow-x: auto;
+    }
+
+    .da-farmers-page table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+
+    .da-farmers-page th,
+    .da-farmers-page td {
+        padding: 12px 15px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+    }
+
+    .da-farmers-page th {
+        background-color: #2d7a2d;
+        color: #fff;
+        font-weight: normal;
+    }
+
+    .da-farmers-page tr:hover {
+        background-color: #f1f1f1;
+    }
+
+    .da-farmers-page .table-active {
+        background-color: #d9fdd9 !important;
+    }
+
+    .da-farmers-page .btn-container {
+        margin-top: 15px;
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+    }
+
+    .da-farmers-page .custom-btn {
+        padding: 10px 18px;
+        font-size: 14px;
+        border: none;
+        border-radius: 5px;
+        text-decoration: none;
+        cursor: pointer;
+        transition: background-color 0.3s;
+    }
+
+    .custom-add { background:#2d7a2d; color:#fff; }
+    .custom-add:hover { background:#0c720c; }
+
+    .custom-edit { background:#FFC107; color:#000; }
+    .custom-edit:hover { background:#e6b800; }
+
+    .custom-delete { background:#f44336; color:#fff; }
+    .custom-delete:hover { background:#d32f2f; }
+
+    .custom-print { background:#2d7a2d; color:#fff; }
+    .custom-print:hover { background:#45a049; }
+
+    .da-farmers-page .pagination {
+        text-align: center;
+        margin-top: 20px;
+    }
+
+    .da-farmers-page .pagination a {
+        display:inline-block;
+        margin:0 5px;
+        padding:8px 14px;
+        border:1px solid #2d7a2d;
+        border-radius:4px;
+        text-decoration:none;
+        color:#fff;
+        background-color:#2d7a2d;
+        transition: all 0.3s ease;
+    }
+
+    .da-farmers-page .pagination a.active {
+        background-color: #256725;
+        font-weight:bold;
+    }
+
+    .da-farmers-page .pagination a:hover {
+        background-color: #1e571e;
+    }
+
+    .da-farmers-page .alert-warning {
+        background:#fff3cd;
+        border:1px solid #ffeeba;
+        padding:15px;
+        border-radius:5px;
+        color:#856404;
+        margin-top:20px;
+        text-align:center;
+    }
+
+    .clickable-row { cursor:pointer; }
+    </style>
+
+<body>
+<div class="da-farmers-page">
+    <h2>Farmer Accounts</h2>
+
+    <!-- for Searching -->
+    <form method="post" class="search-form">
+        <select name="search_field">
+            <option value="name" <?= $searchField==='name'?'selected':''; ?>>Name</option>
+            <option value="email" <?= $searchField==='email'?'selected':''; ?>>Email</option>
+            <option value="municipality" <?= $searchField==='municipality'?'selected':''; ?>>Municipality</option>
+            <option value="association" <?= $searchField==='association'?'selected':''; ?>></option>
+        </select>
+        <input type="text" name="search_term" value="<?= htmlspecialchars($searchTerm) ?>" placeholder="Enter search..." required>
+        <button type="submit">Search</button>
+    </form>
+
+    <?php if ($result && $result->num_rows > 0): ?>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Full Name</th>
+                        <th>Email</th>
+                        <th>Phone#</th>
+                        <th>Farm area size</th>
+                        <th>Address</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php $count = $offset+1; while($row=$result->fetch_assoc()): ?>
+                    <tr class="clickable-row" data-href="farmer_profile.php?id=<?= $row['id'] ?>">
+                        <td><?= $count++ ?></td>
+                        <td><?= htmlspecialchars($row['full_name']) ?></td>
+                        <td><?= htmlspecialchars($row['email']) ?></td>
+                        <td><?= htmlspecialchars($row['phone']) ?></td>
+                        <td><?= htmlspecialchars($row['farm_size']) ?></td>
+                        <td><?= htmlspecialchars($row['region']) ?>, <?= htmlspecialchars($row['barangay']) ?>, <?= htmlspecialchars($row['municipality']) ?>, <?= htmlspecialchars($row['province']) ?></td>
+                        <td><?= htmlspecialchars($row['status']) ?></td>
+                    </tr>
+                <?php endwhile; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="btn-container">
+            <a href="da_farmers_add.php" class="custom-btn custom-add">+ Add Farmer</a>
+        </div>
+
+        <div class="pagination">
+            <?php
+            if($page>1) echo "<a href='da_farmers.php?page=".($page-1)."'>&laquo; Prev</a>";
+            for($i=1;$i<=$total_pages;$i++){
+                $active = ($i==$page)?'class="active"':'';
+                echo "<a href='da_farmers.php?page=$i' $active>$i</a>";
+            }
+            if($page<$total_pages) echo "<a href='da_farmers.php?page=".($page+1)."'>Next &raquo;</a>";
+            ?>
+        </div>
+
+    <?php else: ?>
+        <div class="alert-warning">
+            No farmers found <?= $searchTerm ? "matching \"$searchTerm\"" : "" ?>.
+        </div>
+        <div class="btn-container">
+            <a href="da_farmers_add.php" class="custom-btn custom-add">+ Add Farmer</a>
+        </div>
+    <?php endif; ?>
+</div>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll(".clickable-row").forEach(row => {
+        row.addEventListener("click", () => {
+            document.querySelectorAll(".clickable-row").forEach(r=>r.classList.remove("table-active"));
+            row.classList.add("table-active");
+            window.location.href = row.getAttribute("data-href");
+        });
+    });
+});
+</script>
+
+</body>
+</html>

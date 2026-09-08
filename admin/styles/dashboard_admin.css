@@ -1,0 +1,103 @@
+/* Reset 
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Body 
+body {
+  font-family: "Segoe UI", Arial, sans-serif;
+  color: #333;
+  background-image: url("../images/Farmers-harvesting-rice-field.jpg");
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed; /* optional, makes background stay while scrolling 
+}*/
+
+/* Navbar 
+.navbar {
+  width: 100%;
+  background: rgba(46, 125, 50, 0.95); /* deep green with transparency 
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 30px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+
+.navbar .logo {
+  font-size: 22px;
+  font-weight: bold;
+  color: #c8e6c9; /* light green 
+  letter-spacing: 1px;
+}
+
+/* Nav links 
+.navbar nav {
+  display: flex;
+  gap: 20px;
+}
+
+.navbar nav a {
+  text-decoration: none;
+  color: #e8f5e9; /* very light green 
+  font-size: 15px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.navbar nav a:hover {
+  background: #388e3c; /* brighter green 
+  color: #fff;
+}
+
+.navbar nav a.active {
+  background: #a5d6a7; /* soft green highlight 
+  color: #1b5e20;      /* darker green text 
+}
+
+/* Right section (logout)
+.navbar .right a {
+  text-decoration: none;
+  color: #f9fbe7; /* pale yellow 
+  font-weight: 600;
+  padding: 6px 12px;
+  border: 1px solid #f9fbe7;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.navbar .right a:hover {
+  background: #fdd835; /* golden yellow (sunlight accent) 
+  color: #2e7d32;       green text 
+  border-color: #fdd835;
+}
+
+/* Responsive 
+@media (max-width: 768px) {
+  .navbar {
+    flex-wrap: wrap;
+    padding: 15px;
+  }
+  .navbar nav {
+    width: 100%;
+    justify-content: center;
+    margin: 10px 0;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .navbar .right {
+    width: 100%;
+    text-align: center;
+    margin-top: 10px;
+  }
+}
+*/

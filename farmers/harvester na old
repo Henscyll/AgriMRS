@@ -1,0 +1,817 @@
+<?php
+session_start();
+require '../includes/config.php';
+include 'farmers_header.php';
+include_once '../includes/farmer_auth.php';
+
+$user_id = $_SESSION['user_id'];
+$farmer_query = $conn->prepare("SELECT id FROM farmers WHERE user_id = ?");
+$farmer_query->bind_param("i", $user_id);
+$farmer_query->execute();
+$farmer_result = $farmer_query->get_result();
+
+if ($farmer_result->num_rows === 0) {
+    die("Error: Farmer profile not found. Please contact administrator.");
+}
+
+$farmer_data = $farmer_result->fetch_assoc();
+$farmer_id = $farmer_data['id'];
+
+$message = "";
+$message_type = "";
+
+/* Get farmer's lots for booking */
+$lots_query = $conn->prepare("
+    SELECT id, lot_number, farm_location, farm_size 
+    FROM farmer_lots 
+    WHERE farmer_id = ? AND status = 'Active'
+    ORDER BY lot_number
+");
+$lots_query->bind_param("i", $farmer_id);
+$lots_query->execute();
+$farmer_lots = $lots_query->get_result();
+$has_lots = $farmer_lots->num_rows > 0;
+
+$lots_array = [];
+if ($has_lots) {
+    $farmer_lots->data_seek(0);
+    while ($lot = $farmer_lots->fetch_assoc()) {
+        $lots_array[] = $lot;
+    }
+}
+
+/* Handle booking */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $machine_id   = intval($_POST['machine_id']);
+    $booking_date = $_POST['booking_date']; /* YYYY-MM-DD from hidden field */
+    $lot_id       = !empty($_POST['lot_id']) ? intval($_POST['lot_id']) : null;
+    $notes        = $_POST['notes'] ?? '';
+
+    if ($lot_id) {
+        $verify_lot = $conn->prepare("SELECT id, farm_size FROM farmer_lots WHERE id = ? AND farmer_id = ?");
+        $verify_lot->bind_param("ii", $lot_id, $farmer_id);
+        $verify_lot->execute();
+        $lot_result = $verify_lot->get_result();
+
+        if ($lot_result->num_rows === 0) {
+            $message = "❌ Invalid lot selection.";
+            $message_type = "error";
+        } else {
+            $lot_data  = $lot_result->fetch_assoc();
+            $farm_size = $lot_data['farm_size'];
+
+            $check = $conn->prepare("
+                SELECT id FROM bookings 
+                WHERE machine_id = ? AND booking_date = ?
+                AND status IN ('Pending','Approved')
+            ");
+            $check->bind_param("is", $machine_id, $booking_date);
+            $check->execute();
+            $check->store_result();
+
+            if ($check->num_rows > 0) {
+                $message = "❌ This harvester is already booked on this date.";
+                $message_type = "error";
+            } else {
+                $stmt = $conn->prepare("
+                    INSERT INTO bookings (machine_id, farmer_id, lot_id, booking_date, farm_size, notes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ");
+                $stmt->bind_param("iiisds", $machine_id, $farmer_id, $lot_id, $booking_date, $farm_size, $notes);
+                if ($stmt->execute()) {
+                    $message = "✅ Booking request submitted successfully! Your booking ID is #" . $stmt->insert_id;
+                    $message_type = "success";
+                } else {
+                    $message = "❌ Error: " . $stmt->error;
+                    $message_type = "error";
+                }
+            }
+        }
+    } else {
+        $message = "❌ Please select a lot for this booking.";
+        $message_type = "error";
+    }
+}
+
+$search        = $_GET['search']        ?? '';
+$filter        = $_GET['filter']        ?? 'all';
+$field_changed = $_GET['field_changed'] ?? '0';
+
+$where  = "WHERE m.type = 'Harvester' AND m.status = 'Active'";
+$params = [];
+
+if ($field_changed !== '1' && !empty($search)) {
+    if ($filter === 'association') {
+        $where   .= " AND a.name LIKE ?";
+        $params[] = "%$search%";
+    } elseif ($filter === 'machine') {
+        $where   .= " AND m.machine_name LIKE ?";
+        $params[] = "%$search%";
+    } elseif ($filter === 'municipality') {
+        $where   .= " AND a.municipality LIKE ?";
+        $params[] = "%$search%";
+    }
+    /* all = no filter applied */
+}
+
+$sql = "
+    SELECT m.*, a.name AS association_name, a.municipality
+    FROM machines m
+    LEFT JOIN associations a ON m.association_id = a.id
+    $where
+    ORDER BY m.created_at DESC
+";
+$stmt = $conn->prepare($sql);
+if (!empty($params)) {
+    $stmt->bind_param(str_repeat("s", count($params)), ...$params);
+}
+$stmt->execute();
+$harvesters = $stmt->get_result();
+
+$today = date('Y-m-d');
+?>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Book Harvester</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.css">
+<style>
+:root {
+    --primary-color: #2e7d32;
+    --primary-dark: #1b5e20;
+    --primary-light: #4caf50;
+    --danger-color: #d32f2f;
+    --warning-color: #f57c00;
+    --info-color: #0288d1;
+    --success-color: #388e3c;
+    --bg-light: #f5f5f5;
+    --border-color: #e0e0e0;
+    --text-dark: #212121;
+    --text-light: #757575;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: var(--text-dark);
+}
+
+.page-content {
+    margin-top: 90px;
+    padding: 15px;
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Header */
+.page-header {
+    display: flex; justify-content: space-between;
+    align-items: center; margin-bottom: 10px;
+    flex-wrap: wrap; gap: 10px;
+}
+.page-header h2 {
+    font-size: 24px; color: var(--primary-dark);
+    display: flex; align-items: center; gap: 10px;
+}
+.page-header h2 i { color: var(--primary-color); }
+
+/* Alert Messages */
+.alert {
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 15px;
+    display: flex; align-items: center; gap: 10px;
+    animation: slideDown 0.3s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-size: 14px;
+}
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.alert i { font-size: 18px; }
+.alert.success { background: #e8f5e9; color: var(--success-color); border-left: 4px solid var(--success-color); }
+.alert.error   { background: #ffebee; color: var(--danger-color);  border-left: 4px solid var(--danger-color); }
+.alert.warning { background: #fff3e0; color: var(--warning-color); border-left: 4px solid var(--warning-color); }
+
+/* Compact Search Bar */
+.search-container {
+    padding: 10px 12px; border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: 14px;
+    display: flex; gap: 10px; align-items: center;
+}
+.filter-select {
+    padding: 8px 12px; border: 1px solid var(--border-color);
+    border-radius: 6px; font-size: 14px; background: white;
+    cursor: pointer; min-width: 150px;
+}
+.search-input-wrapper { flex: 1; position: relative; }
+.search-input {
+    padding: 8px 40px 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px; font-size: 14px;
+}
+.search-input:focus {
+    outline: none; border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(46,125,50,0.1);
+}
+.search-btn {
+    margin-right: 820px;
+    padding: 8px 16px; border: none; border-radius: 6px;
+    font-weight: 600; cursor: pointer; font-size: 14px;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: all 0.3s; background: var(--primary-color); color: white;
+}
+.search-btn:hover { background: var(--primary-dark); }
+.clear-btn {
+    padding: 8px 16px; border: none; border-radius: 6px;
+    font-weight: 600; cursor: pointer; font-size: 14px;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: all 0.3s; background: #e0e0e0; color: var(--text-dark);
+    text-decoration: none;
+}
+.clear-btn:hover { background: #bdbdbd; }
+
+.no-lots-warning {
+    background: #fff3e0; border: 2px solid var(--warning-color);
+    border-radius: 8px; padding: 12px; margin-bottom: 15px;
+    display: flex; align-items: start; gap: 10px; font-size: 14px;
+}
+.no-lots-warning i { color: var(--warning-color); font-size: 20px; }
+.no-lots-warning-content h3 { color: var(--warning-color); margin-bottom: 6px; font-size: 15px; }
+.no-lots-warning-content p  { color: var(--text-light); margin-bottom: 10px; }
+.no-lots-warning-content a {
+    color: white; background: var(--warning-color); padding: 6px 12px;
+    border-radius: 6px; text-decoration: none;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-weight: 600; font-size: 13px;
+}
+
+/* Harvester Grid */
+.harvester-container {
+    max-height: calc(100vh - 280px); overflow-y: auto; padding-right: 5px;
+}
+
+.harvester-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+/* Card */
+.card {
+    background: white; border-radius: 6px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    transition: all 0.3s ease; border: 2px solid transparent;
+}
+.card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    border-color: var(--primary-color);
+}
+.card-image { position: relative; height: 100px; width: 100%; overflow: hidden; }
+.card-image img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s ease; }
+.card:hover .card-image img { transform: scale(1.05); }
+.card-badge {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(46,125,50,0.95); color: white;
+    padding: 3px 8px; border-radius: 12px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; display: flex; align-items: center; gap: 3px;
+}
+.card-content { padding: 12px; }
+.card-title {
+    font-size: 13px; font-weight: 700; margin-bottom: 6px;
+    color: var(--text-dark); display: flex; align-items: center; gap: 5px;
+}
+.card-title i { color: var(--primary-color); font-size: 12px; }
+.card-info { margin-bottom: 10px; }
+.info-item {
+    display: flex; align-items: center; gap: 5px;
+    margin: 4px 0; font-size: 12px; color: var(--text-light);
+}
+.info-item i { width: 12px; color: var(--primary-color); font-size: 11px; }
+.card-description {
+    font-size: 11px; color: var(--text-light); line-height: 1.4;
+    margin-bottom: 10px;
+    display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+}
+.btn-book {
+    width: 100%; padding: 8px; font-size: 12px;
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+    color: white; border: none; border-radius: 6px; cursor: pointer;
+    font-weight: 600; display: flex; align-items: center; justify-content: center;
+    gap: 5px; transition: all 0.3s ease;
+}
+.btn-book:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(46,125,50,0.4); }
+.btn-book:disabled { background: var(--border-color); cursor: not-allowed; opacity: 0.6; }
+
+/* Modal */
+.modal {
+    display: none; position: fixed; z-index: 1000;
+    left: 0; top: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5); animation: fadeIn 0.3s ease;
+}
+@keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
+
+.modal-content {
+    background: white; margin: 5% auto; padding: 0;
+    border-radius: 12px; width: 90%; max-width: 500px;
+    max-height: 85vh; display: flex; flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    animation: slideUp 0.3s ease;
+}
+@keyframes slideUp {
+    from { transform: translateY(50px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+}
+.modal-header {
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+    color: white; padding: 20px; border-radius: 12px 12px 0 0;
+    display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+}
+.modal-header h3 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 10px; }
+.close { color: white; font-size: 28px; font-weight: bold; cursor: pointer; transition: all 0.3s; line-height: 1; }
+.close:hover { transform: scale(1.2); }
+
+.modal-body {
+    padding: 25px; overflow-y: scroll; flex: 1; max-height: 55vh;
+}
+.modal-body::-webkit-scrollbar { width: 8px; }
+.modal-body::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
+.modal-body::-webkit-scrollbar-thumb { background: var(--primary-color); border-radius: 10px; }
+.modal-body::-webkit-scrollbar-thumb:hover { background: var(--primary-dark); }
+
+.machine-info-modal {
+    background: var(--bg-light); padding: 15px;
+    border-radius: 8px; margin-bottom: 20px;
+}
+.machine-info-modal h4 { margin: 0 0 10px; color: var(--primary-dark); font-size: 16px; }
+.machine-info-modal .info-item { margin: 6px 0; }
+
+.form-group { margin-bottom: 18px; }
+.form-group label {
+    display: block; font-size: 13px; font-weight: 600;
+    color: var(--text-dark); margin-bottom: 6px;
+}
+.form-group label .required { color: var(--danger-color); }
+
+.form-group select,
+.form-group textarea {
+    width: 100%; padding: 10px;
+    border: 2px solid var(--border-color); border-radius: 6px;
+    font-size: 14px; transition: all 0.3s ease; font-family: inherit;
+}
+.form-group select:focus,
+.form-group textarea:focus {
+    outline: none; border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(46,125,50,0.1);
+}
+.form-group textarea { resize: vertical; min-height: 80px; }
+
+/* ── Flatpickr date field ── */
+.date-input-wrapper { position: relative; }
+.date-input-wrapper .flatpickr-input {
+    width: 100% !important;
+    padding: 10px 40px 10px 10px !important;
+    border: 2px solid var(--border-color) !important;
+    border-radius: 6px !important;
+    font-size: 14px !important;
+    font-family: inherit !important;
+    background: white !important;
+    color: var(--text-dark) !important;
+    cursor: pointer !important;
+    box-sizing: border-box !important;
+    transition: border-color 0.3s, box-shadow 0.3s !important;
+}
+.date-input-wrapper .flatpickr-input:focus {
+    outline: none !important;
+    border-color: var(--primary-color) !important;
+    box-shadow: 0 0 0 3px rgba(46,125,50,0.1) !important;
+}
+.date-cal-icon {
+    position: absolute; right: 11px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--primary-color); font-size: 16px; pointer-events: none;
+}
+
+.lot-info {
+    background: #e8f5e9; padding: 12px; border-radius: 6px;
+    font-size: 13px; margin-top: 8px;
+    border-left: 4px solid var(--primary-color);
+}
+.lot-info strong { color: var(--primary-dark); }
+
+.modal-footer {
+    padding: 0 25px 25px; display: flex; gap: 10px; flex-shrink: 0;
+}
+.btn-submit {
+    flex: 1; padding: 12px;
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+    color: white; border: none; border-radius: 6px; font-weight: 600;
+    cursor: pointer; font-size: 15px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.3s;
+}
+.btn-submit:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(46,125,50,0.4); }
+.btn-cancel {
+    padding: 12px 20px; background: white; color: var(--text-dark);
+    border: 2px solid var(--border-color); border-radius: 6px;
+    font-weight: 600; cursor: pointer; font-size: 15px; transition: all 0.3s;
+}
+.btn-cancel:hover { background: var(--bg-light); border-color: var(--text-dark); }
+
+/* Confirmation Modal */
+.confirm-modal {
+    display: none; position: fixed; z-index: 1001;
+    left: 0; top: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6);
+}
+.confirm-content {
+    background: white; margin: 15% auto; padding: 0;
+    border-radius: 12px; width: 90%; max-width: 400px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3); animation: slideUp 0.3s ease;
+}
+.confirm-header {
+    background: linear-gradient(135deg, var(--warning-color), #ef6c00);
+    color: white; padding: 20px; border-radius: 12px 12px 0 0; text-align: center;
+}
+.confirm-header i  { font-size: 48px; margin-bottom: 10px; display: block; }
+.confirm-header h3 { margin: 0; font-size: 20px; }
+.confirm-body { padding: 25px; text-align: center; color: var(--text-dark); }
+.confirm-body p { font-size: 15px; line-height: 1.6; margin-bottom: 10px; }
+.confirm-footer { padding: 0 25px 25px; display: flex; gap: 10px; }
+.btn-yes { flex: 1; padding: 12px; background: var(--primary-color); color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 15px; }
+.btn-yes:hover { background: var(--primary-dark); }
+.btn-no  { flex: 1; padding: 12px; background: white; color: var(--text-dark); border: 2px solid var(--border-color); border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 15px; }
+.btn-no:hover { background: var(--bg-light); }
+
+/* Empty State */
+.empty-state { text-align: center; padding: 50px 20px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.empty-state i  { font-size: 60px; color: var(--border-color); margin-bottom: 15px; display: block; }
+.empty-state h3 { color: var(--text-dark); margin-bottom: 8px; }
+.empty-state p  { color: var(--text-light); font-size: 14px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+    .page-content { padding: 10px; margin-top: 100px; }
+    .search-container { flex-direction: column; align-items: stretch; }
+    .filter-select { width: 100%; }
+    .harvester-container { max-height: calc(100vh - 350px); }
+    .harvester-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .modal-content { width: 95%; margin: 10% auto; }
+    .modal-footer { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div class="page-content">
+    <div class="page-header">
+        <h2><i class="fas fa-cogs"></i> Available Harvesters</h2>
+    </div>
+
+    <?php if ($message): ?>
+        <div class="alert <?= $message_type ?>">
+            <i class="fas fa-<?= $message_type === 'success' ? 'check-circle' : ($message_type === 'error' ? 'exclamation-circle' : 'info-circle') ?>"></i>
+            <span><?= $message ?></span>
+        </div>
+    <?php endif; ?>
+
+    <?php if (!$has_lots): ?>
+        <div class="no-lots-warning">
+            <i class="fas fa-exclamation-triangle"></i>
+            <div class="no-lots-warning-content">
+                <h3>No Farm Lots Registered</h3>
+                <p>You need to register at least one farm lot before you can book a harvester.</p>
+                <a href="my_account.php"><i class="fas fa-plus-circle"></i> Add Farm Lot</a>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <!-- ══════════════════════════════════
+         SEARCH BAR
+         All Fields = hide input & button
+         Other filters = show input & button
+         Switching filter clears & resets
+    ══════════════════════════════════ -->
+    <form method="GET" class="search-container" id="searchForm">
+        <input type="hidden" name="field_changed" id="field_changed" value="0">
+
+        <select name="filter" class="filter-select" id="filterSelect" onchange="handleFilterChange()">
+            <option value="all"          <?= $filter==='all'          ?'selected':'' ?>>All Fields</option>
+            <option value="association"  <?= $filter==='association'  ?'selected':'' ?>>Association</option>
+            <option value="machine"      <?= $filter==='machine'      ?'selected':'' ?>>Machine Name</option>
+            <option value="municipality" <?= $filter==='municipality' ?'selected':'' ?>>Municipality</option>
+        </select>
+
+        <!-- Hidden when All Fields selected -->
+        <div class="search-input-wrapper" id="searchInputWrapper"
+             style="<?= $filter==='all' ? 'display:none;' : '' ?>">
+            <input type="text"
+                   name="search"
+                   id="searchInput"
+                   class="search-input"
+                   placeholder="<?= $filter==='association' ? 'Search by association...' : ($filter==='machine' ? 'Search by machine name...' : 'Search by municipality...') ?>"
+                   value="<?= ($field_changed==='1' || $filter==='all') ? '' : htmlspecialchars($search) ?>">
+        </div>
+
+        <button type="submit" class="search-btn" id="searchBtn"
+                style="<?= $filter==='all' ? 'display:none;' : '' ?>">
+            <i class="fas fa-search"></i> Search
+        </button>
+
+        <?php if (!empty($search) && $filter !== 'all' && $field_changed !== '1'): ?>
+            <a href="harvester.php?filter=<?= urlencode($filter) ?>" class="clear-btn">
+                <i class="fas fa-times"></i> Clear
+            </a>
+        <?php endif; ?>
+    </form>
+
+    <!-- Harvester Grid -->
+    <div class="harvester-container">
+        <div class="harvester-grid">
+            <?php if ($harvesters->num_rows > 0): ?>
+                <?php while ($row = $harvesters->fetch_assoc()): ?>
+                <div class="card">
+                    <div class="card-image">
+                        <img src="<?= !empty($row['image_path']) ? htmlspecialchars($row['image_path']) : '../uploads/default-harvester.jpg' ?>"
+                             alt="<?= htmlspecialchars($row['machine_name']) ?>"
+                             onerror="this.src='../uploads/default-harvester.jpg'">
+                        <span class="card-badge">
+                            <i class="fas fa-check-circle"></i>
+                            <?= htmlspecialchars($row['status']) ?>
+                        </span>
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">
+                            <i class="fas fa-cogs"></i>
+                            <?= htmlspecialchars($row['machine_name']) ?>
+                        </h3>
+                        <div class="card-info">
+                            <div class="info-item">
+                                <i class="fas fa-users"></i>
+                                <span><?= htmlspecialchars($row['association_name']) ?></span>
+                            </div>
+                            <div class="info-item">
+                                <i class="fas fa-map-marker-alt"></i>
+                                <span><?= htmlspecialchars($row['municipality']) ?></span>
+                            </div>
+                            <div class="info-item">
+                                <i class="fas fa-peso-sign"></i>
+                                <span><strong>₱<?= number_format($row['price_per_hectare'],2) ?></strong> per hectare</span>
+                            </div>
+                        </div>
+                        <?php if (!empty($row['description'])): ?>
+                            <p class="card-description"><?= htmlspecialchars($row['description']) ?></p>
+                        <?php endif; ?>
+                        <button type="button"
+                                class="btn-book"
+                                onclick="openBookingModal(<?= $row['id'] ?>,'<?= addslashes($row['machine_name']) ?>','<?= addslashes($row['association_name']) ?>','<?= addslashes($row['municipality']) ?>',<?= $row['price_per_hectare'] ?>)"
+                                <?= !$has_lots ? 'disabled' : '' ?>>
+                            <i class="fas fa-calendar-check"></i>
+                            <?= $has_lots ? 'Book This Harvester' : 'Add Farm Lot First' ?>
+                        </button>
+                    </div>
+                </div>
+                <?php endwhile; ?>
+            <?php else: ?>
+                <div class="empty-state" style="grid-column:1/-1;">
+                    <i class="fas fa-search"></i>
+                    <h3>No Harvesters Found</h3>
+                    <p>No active harvesters match your search criteria. Try adjusting your filters.</p>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<!-- Booking Modal -->
+<div id="bookingModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3><i class="fas fa-calendar-check"></i> Book Harvester</h3>
+            <span class="close" onclick="closeModal()">&times;</span>
+        </div>
+        <form id="bookingForm" onsubmit="return false;">
+            <div class="modal-body">
+                <input type="hidden" name="machine_id" id="modal_machine_id">
+
+                <div class="machine-info-modal">
+                    <h4 id="modal_machine_name"></h4>
+                    <div class="info-item"><i class="fas fa-users"></i><span id="modal_association_name"></span></div>
+                    <div class="info-item"><i class="fas fa-map-marker-alt"></i><span id="modal_municipality"></span></div>
+                    <div class="info-item"><i class="fas fa-peso-sign"></i><span><strong id="modal_price"></strong> per hectare</span></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Select Your Farm Lot <span class="required">*</span></label>
+                    <select name="lot_id" id="modal_lot_id" required>
+                        <option value="">-- Select a lot --</option>
+                        <?php foreach ($lots_array as $lot): ?>
+                            <option value="<?= $lot['id'] ?>"
+                                    data-location="<?= htmlspecialchars($lot['farm_location']) ?>"
+                                    data-size="<?= $lot['farm_size'] ?>">
+                                Lot #<?= htmlspecialchars($lot['lot_number']) ?> (<?= number_format($lot['farm_size'],2) ?> ha)
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="lot-info" id="modal_lot_info" style="display:none;">
+                        <div><strong>Location:</strong> <span id="modal_lot_location"></span></div>
+                        <div><strong>Size:</strong> <span id="modal_lot_size"></span> hectares</div>
+                        <div><strong>Estimated Cost:</strong> ₱<span id="modal_lot_cost"></span></div>
+                    </div>
+                </div>
+
+                <!-- ── Flatpickr date picker — MM/DD/YYYY display ── -->
+                <div class="form-group">
+                    <label>Booking Date <span class="required">*</span></label>
+                    <div class="date-input-wrapper">
+                        <input type="text"
+                               id="booking_date_display"
+                               placeholder="MM/DD/YYYY"
+                               readonly>
+                        <!-- Hidden field: YYYY-MM-DD for PHP -->
+                        <input type="hidden" name="booking_date" id="booking_date">
+                        <i class="fas fa-calendar-alt date-cal-icon"></i>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Notes (Optional)</label>
+                    <textarea name="notes" id="notes" placeholder="Any special instructions or requirements..." rows="4"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-info-circle"></i> Booking Guidelines</label>
+                    <div class="lot-info" style="display:block;">
+                        <div style="margin-bottom:8px;"><strong>Important:</strong> Please review all booking details carefully before confirming.</div>
+                        <div style="margin-bottom:8px;"><strong>Preparation:</strong> Ensure your farm lot is accessible and ready for harvester operation on the scheduled date.</div>
+                        <div style="margin-bottom:8px;"><strong>Cancellation Policy:</strong> Bookings can be cancelled up to 24 hours before the scheduled date without penalty.</div>
+                        <div style="margin-bottom:8px;"><strong>Rescheduling:</strong> If weather conditions are unfavorable, you may reschedule at no additional cost.</div>
+                        <div style="margin-bottom:8px;"><strong>Payment:</strong> Payment will be collected after the service is completed based on the actual hectares serviced.</div>
+                        <div><strong>Contact:</strong> The association will contact you 24 hours before your booking to confirm details.</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-shield-alt"></i> Service Agreement</label>
+                    <div class="lot-info" style="display:block; background:#fff3e0; border-left-color:#f57c00;">
+                        <div style="margin-bottom:8px;"><strong>Terms & Conditions:</strong></div>
+                        <div style="margin-bottom:6px; font-size:12px;">• The operator will arrive within 2 hours of the scheduled time</div>
+                        <div style="margin-bottom:6px; font-size:12px;">• Service quality is guaranteed by the association</div>
+                        <div style="margin-bottom:6px; font-size:12px;">• Any equipment damage will be assessed and resolved fairly</div>
+                        <div style="font-size:12px;">• By confirming, you agree to these terms and conditions</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn-cancel" onclick="closeModal()">Cancel</button>
+                <button type="button" class="btn-submit" onclick="showConfirmation()">
+                    <i class="fas fa-check"></i> Confirm Booking
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Confirmation Modal -->
+<div id="confirmModal" class="confirm-modal">
+    <div class="confirm-content">
+        <div class="confirm-header">
+            <i class="fas fa-question-circle"></i>
+            <h3>Confirm Your Booking</h3>
+        </div>
+        <div class="confirm-body">
+            <p><strong>Are you sure you want to proceed with this booking?</strong></p>
+            <p>Please review all details before confirming.</p>
+        </div>
+        <div class="confirm-footer">
+            <button type="button" class="btn-no"  onclick="closeConfirmation()">No</button>
+            <button type="button" class="btn-yes" onclick="submitBooking()">Yes, Confirm</button>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.js"></script>
+<script>
+/* ── Flatpickr — MM/DD/YYYY display, YYYY-MM-DD into hidden field ── */
+flatpickr('#booking_date_display', {
+    dateFormat: 'm/d/Y',   /* display MM/DD/YYYY */
+    minDate:    'today',
+    allowInput: false,
+    onChange: function(selectedDates) {
+        if (selectedDates.length) {
+            const d = selectedDates[0];
+            document.getElementById('booking_date').value =
+                d.getFullYear() + '-' +
+                String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                String(d.getDate()).padStart(2, '0');
+        } else {
+            document.getElementById('booking_date').value = '';
+        }
+    }
+});
+
+/* ── Filter — hide/show input, clear & reset on change ── */
+const placeholders = {
+    association:  'Search by association name...',
+    machine:      'Search by machine name...',
+    municipality: 'Search by municipality...',
+};
+
+function handleFilterChange() {
+    const f       = document.getElementById('filterSelect').value;
+    const wrapper = document.getElementById('searchInputWrapper');
+    const btn     = document.getElementById('searchBtn');
+    const input   = document.getElementById('searchInput');
+
+    input.value = '';
+    document.getElementById('field_changed').value = '1';
+
+    if (f === 'all') {
+        wrapper.style.display = 'none';
+        btn.style.display     = 'none';
+    } else {
+        wrapper.style.display = '';
+        btn.style.display     = '';
+        input.placeholder     = placeholders[f] || 'Search...';
+    }
+    document.getElementById('searchForm').submit();
+}
+
+/* ── Booking modal ── */
+let currentPricePerHa = 0;
+
+function openBookingModal(machineId, machineName, association, municipality, pricePerHa) {
+    currentPricePerHa = pricePerHa;
+    document.getElementById('modal_machine_id').value             = machineId;
+    document.getElementById('modal_machine_name').textContent     = machineName;
+    document.getElementById('modal_association_name').textContent = association;
+    document.getElementById('modal_municipality').textContent     = municipality;
+    document.getElementById('modal_price').textContent =
+        '₱' + parseFloat(pricePerHa).toLocaleString('en-PH', {minimumFractionDigits: 2});
+    document.getElementById('modal_lot_id').value           = '';
+    document.getElementById('booking_date_display').value   = '';
+    document.getElementById('booking_date').value           = '';
+    document.getElementById('notes').value                  = '';
+    document.getElementById('modal_lot_info').style.display = 'none';
+    document.getElementById('bookingModal').style.display   = 'block';
+}
+
+function closeModal() { document.getElementById('bookingModal').style.display = 'none'; }
+
+function showConfirmation() {
+    if (!document.getElementById('modal_lot_id').value) { alert('Please select a farm lot'); return; }
+    if (!document.getElementById('booking_date').value) { alert('Please select a booking date'); return; }
+    document.getElementById('confirmModal').style.display = 'block';
+}
+function closeConfirmation() { document.getElementById('confirmModal').style.display = 'none'; }
+
+function submitBooking() {
+    const form = document.createElement('form');
+    form.method = 'POST'; form.action = '';
+    [
+        { name: 'machine_id',   value: document.getElementById('modal_machine_id').value },
+        { name: 'lot_id',       value: document.getElementById('modal_lot_id').value },
+        { name: 'booking_date', value: document.getElementById('booking_date').value }, /* already YYYY-MM-DD */
+        { name: 'notes',        value: document.getElementById('notes').value },
+    ].forEach(f => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = f.name; inp.value = f.value;
+        form.appendChild(inp);
+    });
+    document.body.appendChild(form);
+    form.submit();
+}
+
+/* Close modals on backdrop click */
+window.onclick = function(event) {
+    if (event.target === document.getElementById('bookingModal'))  closeModal();
+    if (event.target === document.getElementById('confirmModal'))  closeConfirmation();
+};
+
+/* Lot info on select */
+document.getElementById('modal_lot_id').addEventListener('change', function() {
+    const selected = this.options[this.selectedIndex];
+    const infoDiv  = document.getElementById('modal_lot_info');
+    if (this.value) {
+        const location = selected.getAttribute('data-location');
+        const size     = parseFloat(selected.getAttribute('data-size'));
+        const cost     = (size * currentPricePerHa).toFixed(2);
+        document.getElementById('modal_lot_location').textContent = location;
+        document.getElementById('modal_lot_size').textContent     = size.toFixed(2);
+        document.getElementById('modal_lot_cost').textContent     =
+            parseFloat(cost).toLocaleString('en-PH', {minimumFractionDigits: 2});
+        infoDiv.style.display = 'block';
+    } else {
+        infoDiv.style.display = 'none';
+    }
+});
+</script>
+
+</body>
+</html>
